@@ -125,4 +125,7 @@
 5. Push `main` to GitHub.
 
 ### Current Status
-- In progress.
+- Done: tracked `__pycache__` files were removed from git index.
+- Done: local `main` was rewritten to a clean single root commit.
+- Done: reachable git refs passed the secret-pattern scan.
+- Done: clean `main` was pushed to GitHub and set to track `origin/main`.
