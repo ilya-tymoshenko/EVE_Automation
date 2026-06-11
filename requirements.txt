@@ -1,0 +1,10 @@
+pyautogui
+pyperclip
+opencv-python
+Pillow
+beautifulsoup4
+requests
+google-auth
+google-auth-oauthlib
+google-api-python-client
+openai

@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+
+credentials.json
+token.json
+
+__pycache__/
+runtime_failures/
+codex_reports/
+template_backups/

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "root_cause": {
+      "type": "string"
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "restart_safe": {
+      "type": "boolean"
+    },
+    "next_start_account": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "requires_human_review": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "root_cause",
+    "changed_files",
+    "verification",
+    "restart_safe",
+    "next_start_account",
+    "requires_human_review",
+    "notes"
+  ]
+}
