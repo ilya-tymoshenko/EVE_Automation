@@ -119,6 +119,10 @@ DISABLE_3D_RENDERING_ON_GAME_START = os.environ.get("EVE_DISABLE_3D_RENDERING_ON
 DISABLE_3D_RENDERING_ATTEMPTS = int(os.environ.get("EVE_DISABLE_3D_RENDERING_ATTEMPTS", "2"))
 DISABLE_3D_RENDERING_MIN_MEAN_DIFF = float(os.environ.get("EVE_DISABLE_3D_RENDERING_MIN_MEAN_DIFF", "4.0"))
 REQUIRE_3D_RENDERING_TOGGLE_CONFIRMATION = os.environ.get("EVE_REQUIRE_3D_RENDERING_TOGGLE_CONFIRMATION", "1").lower() not in {"0", "false", "no"}
+LAUNCHER_FULLSCREEN_ON_START = os.environ.get("EVE_LAUNCHER_FULLSCREEN_ON_START", "0").lower() not in {"0", "false", "no"}
+LAUNCHER_READY_STABLE_SECONDS = float(os.environ.get("EVE_LAUNCHER_READY_STABLE_SECONDS", "3"))
+LAUNCHER_FULLSCREEN_MIN_MEAN_DIFF = float(os.environ.get("EVE_LAUNCHER_FULLSCREEN_MIN_MEAN_DIFF", "4.0"))
+TIMEOUT_LAUNCHER_AFTER_F11 = int(os.environ.get("EVE_TIMEOUT_LAUNCHER_AFTER_F11", "20"))
 LAUNCHER_ACTION_RETRIES = int(os.environ.get("EVE_LAUNCHER_ACTION_RETRIES", "3"))
 LAUNCHER_START_COMMAND_ATTEMPTS = int(os.environ.get("EVE_LAUNCHER_START_COMMAND_ATTEMPTS", "2"))
 LAUNCHER_FOCUS_ATTEMPTS = int(os.environ.get("EVE_LAUNCHER_FOCUS_ATTEMPTS", "3"))
@@ -479,26 +483,25 @@ def common_launcher_start_logic(is_initial_start=False, attempt_fullscreen=True)
             subprocess.Popen(launcher_command)
             log_event(f"Команда на запуск лаунчера отправлена (попытка {command_attempt}/{command_attempts}).")
 
-            if wait_for_launcher_ready(f"{action.lower()} лаунчера", timeout_seconds=TIMEOUT_LAUNCHER_READY):
+            if wait_for_stable_launcher_ready(
+                f"{action.lower()} лаунчера",
+                timeout_seconds=TIMEOUT_LAUNCHER_READY,
+            )[0]:
                 launcher_ready = True
                 break
 
             if command_attempt < command_attempts:
                 log_event("Лаунчер не подтвердился после launch-команды. Пробуем найти окно и отправить команду ещё раз.", important=True)
-                focus_existing_launcher_window(timeout_seconds=TIMEOUT_LAUNCHER_FOCUS_VERIFY)
+                recover_existing_launcher_visibility("лаунчер перед повторной launch-командой")
 
         if not launcher_ready:
             return False
 
-        if attempt_fullscreen:
-            log_event("Попытка переключить лаунчер в полноэкранный режим (F11)...")
-            time.sleep(PAUSE_BEFORE_F11_ATTEMPT)
-            pyautogui.press('f11')
-            time.sleep(PAUSE_AFTER_F11_ATTEMPT)
-            if not wait_for_launcher_ready("лаунчер после F11", timeout_seconds=15):
-                log_event("Лаунчер был найден до F11, но после F11 состояние не подтвердилось. Продолжаем без повторного F11.", important=True)
-            else:
-                log_event("Лаунчер подтверждён после F11.")
+        if attempt_fullscreen and LAUNCHER_FULLSCREEN_ON_START:
+            if not toggle_launcher_fullscreen_with_confirmation():
+                return False
+        elif attempt_fullscreen:
+            log_event("F11 на старте лаунчера пропущен: EVE_LAUNCHER_FULLSCREEN_ON_START=0.")
         else:
             log_event("F11 пропущен для recovery/перезапуска лаунчера.")
         if not is_initial_start:
@@ -670,8 +673,128 @@ def launcher_after_game_exit_templates():
     ]
 
 
+def launcher_visibility_templates():
+    unique_templates = []
+    seen_filenames = set()
+    for image_filename, image_description in [
+        *launcher_ready_templates(),
+        *launcher_after_game_exit_templates(),
+    ]:
+        if image_filename in seen_filenames:
+            continue
+        seen_filenames.add(image_filename)
+        unique_templates.append((image_filename, image_description))
+    return unique_templates
+
+
 def wait_for_launcher_ready(context_description, timeout_seconds=TIMEOUT_LAUNCHER_READY):
     return wait_for_any_image(launcher_ready_templates(), context_description, timeout_seconds=timeout_seconds)[0] is not None
+
+
+def wait_for_stable_launcher_ready(
+    context_description,
+    timeout_seconds=TIMEOUT_LAUNCHER_READY,
+    stable_seconds=LAUNCHER_READY_STABLE_SECONDS,
+    confidence_level=0.75,
+):
+    log_event(
+        f"Ожидаем стабильное состояние лаунчера '{context_description}', "
+        f"таймаут: {timeout_seconds} сек, stable: {stable_seconds:.1f} сек..."
+    )
+    start_time = time.time()
+    stable_since = None
+    stable_key = None
+    stable_result = (None, None, None)
+    logged_errors = set()
+
+    while time.time() - start_time < timeout_seconds:
+        image_filename, image_description, location = find_first_available_image(
+            launcher_ready_templates(),
+            confidence_level=confidence_level,
+            logged_errors=logged_errors,
+        )
+        if image_filename:
+            current_key = (image_filename, image_description)
+            if current_key != stable_key:
+                stable_key = current_key
+                stable_since = time.time()
+                stable_result = (image_filename, image_description, location)
+                log_event(f"Лаунчер виден, проверяем стабильность: '{image_description}' ({image_filename}).")
+            elif time.time() - stable_since >= stable_seconds:
+                log_event(f"Лаунчер стабилен: '{image_description}' ({image_filename}).")
+                return stable_result
+        else:
+            stable_since = None
+            stable_key = None
+            stable_result = (None, None, None)
+
+        time.sleep(PAUSE_SHORT)
+
+    log_image_match_diagnostics_for_options(
+        launcher_ready_templates(),
+        context_description,
+        confidence_level,
+        "stable_timeout",
+    )
+    log_event(f"ОШИБКА: стабильное состояние лаунчера '{context_description}' не подтверждено.", important=True)
+    return None, None, None
+
+
+def toggle_launcher_fullscreen_with_confirmation():
+    log_event("Подготовка к F11: ждём стабильный лаунчер и фокусируем окно.", important=True)
+    if not wait_for_stable_launcher_ready(
+        "лаунчер перед F11",
+        timeout_seconds=TIMEOUT_LAUNCHER_AFTER_F11,
+    )[0]:
+        return False
+
+    if not recover_existing_launcher_visibility("лаунчер перед F11", force_focus=True):
+        log_event("ОШИБКА: лаунчер перед F11 не удалось сфокусировать. F11 не нажимаем.", important=True)
+        return False
+
+    try:
+        before_image = pyautogui.screenshot().convert("RGB")
+    except Exception as exc:
+        log_event(f"Не удалось сделать before screenshot перед F11: {type(exc).__name__}: {exc}", important=True)
+        before_image = None
+
+    if before_image is not None:
+        save_runtime_evidence_image(before_image, "before_launcher_f11")
+
+    log_event("Переключаем лаунчер в fullscreen через F11.", important=True)
+    time.sleep(PAUSE_BEFORE_F11_ATTEMPT)
+    pyautogui.press('f11')
+    time.sleep(PAUSE_AFTER_F11_ATTEMPT)
+
+    try:
+        after_image = pyautogui.screenshot().convert("RGB")
+    except Exception as exc:
+        log_event(f"Не удалось сделать after screenshot после F11: {type(exc).__name__}: {exc}", important=True)
+        after_image = None
+
+    if after_image is not None:
+        save_runtime_evidence_image(after_image, "after_launcher_f11")
+
+    if before_image is not None and after_image is not None:
+        mean_diff = mean_abs_image_difference(before_image, after_image)
+        log_event(
+            "LAUNCHER_F11_DIAG "
+            f"mean_abs_diff={mean_diff:.2f} "
+            f"required>={LAUNCHER_FULLSCREEN_MIN_MEAN_DIFF:.2f}"
+        )
+        if mean_diff < LAUNCHER_FULLSCREEN_MIN_MEAN_DIFF:
+            log_event("ОШИБКА: F11 не подтверждён изменением экрана лаунчера. Продолжать небезопасно.", important=True)
+            return False
+
+    if not wait_for_stable_launcher_ready(
+        "лаунчер после F11",
+        timeout_seconds=TIMEOUT_LAUNCHER_AFTER_F11,
+    )[0]:
+        log_event("ОШИБКА: после F11 лаунчер не стабилизировался. Продолжать небезопасно.", important=True)
+        return False
+
+    log_event("F11 подтверждён: лаунчер снова стабилен после переключения.", important=True)
+    return True
 
 
 def wait_for_login_dialog_ready(timeout_seconds=TIMEOUT_LOGIN_DIALOG_READY):
@@ -935,21 +1058,27 @@ def focus_existing_game_window(context_description, verify_timeout_seconds=TIMEO
 
 def wait_for_launcher_visible_optional(description, timeout_seconds=1):
     return wait_for_optional_image(
-        launcher_after_game_exit_templates(),
+        launcher_visibility_templates(),
         description,
         timeout_seconds=timeout_seconds,
         confidence_level=0.75,
     )[0] is not None
 
 
-def recover_existing_launcher_visibility(context_description):
-    if wait_for_launcher_visible_optional(context_description, timeout_seconds=1):
+def recover_existing_launcher_visibility(context_description, force_focus=False):
+    if not force_focus and wait_for_launcher_visible_optional(context_description, timeout_seconds=1):
         return True
 
-    log_event(
-        f"{context_description}: лаунчер не виден. Ищем уже открытое окно через niri, без повторного запуска Steam/EVE.",
-        important=True,
-    )
+    if force_focus:
+        log_event(
+            f"{context_description}: требуется фокус окна лаунчера через niri перед действием.",
+            important=True,
+        )
+    else:
+        log_event(
+            f"{context_description}: лаунчер не виден. Ищем уже открытое окно через niri, без повторного запуска Steam/EVE.",
+            important=True,
+        )
 
     for attempt in range(1, LAUNCHER_FOCUS_ATTEMPTS + 1):
         candidates = get_launcher_window_candidates()
