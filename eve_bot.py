@@ -104,6 +104,7 @@ TIMEOUT_GAME_POPUP_QUICK_SCAN = int(os.environ.get("EVE_TIMEOUT_GAME_POPUP_QUICK
 TIMEOUT_GAME_REQUIRED_ACTION = int(os.environ.get("EVE_TIMEOUT_GAME_REQUIRED_ACTION", "15"))
 TIMEOUT_GAME_REQUIRED_STATE = int(os.environ.get("EVE_TIMEOUT_GAME_REQUIRED_STATE", "20"))
 TIMEOUT_GAME_OPTIONAL_ACTION = int(os.environ.get("EVE_TIMEOUT_GAME_OPTIONAL_ACTION", "4"))
+TIMEOUT_GAME_UI_AFTER_3D_TOGGLE = int(os.environ.get("EVE_TIMEOUT_GAME_UI_AFTER_3D_TOGGLE", "8"))
 TIMEOUT_GAME_QUIT_MENU_READY = int(os.environ.get("EVE_TIMEOUT_GAME_QUIT_MENU_READY", "25"))
 TIMEOUT_GAME_EXIT_TO_LAUNCHER = int(os.environ.get("EVE_TIMEOUT_GAME_EXIT_TO_LAUNCHER", "120"))
 TIMEOUT_LAUNCHER_RECOVERY = int(os.environ.get("EVE_TIMEOUT_LAUNCHER_RECOVERY", "90"))
@@ -113,6 +114,7 @@ TIMEOUT_OPTIONAL_CONFIRM_DIALOG = int(os.environ.get("EVE_TIMEOUT_OPTIONAL_CONFI
 MAX_GAME_POPUP_CLOSE_ATTEMPTS = int(os.environ.get("EVE_MAX_GAME_POPUP_CLOSE_ATTEMPTS", "4"))
 MAX_GAME_QUIT_MENU_ATTEMPTS = int(os.environ.get("EVE_MAX_GAME_QUIT_MENU_ATTEMPTS", "4"))
 MAX_GAME_CONTRACT_VIEW_ATTEMPTS = int(os.environ.get("EVE_MAX_GAME_CONTRACT_VIEW_ATTEMPTS", "3"))
+MAX_GAME_LEFT_MENU_OPEN_ATTEMPTS = int(os.environ.get("EVE_MAX_GAME_LEFT_MENU_OPEN_ATTEMPTS", "4"))
 GAME_READY_STABLE_SECONDS = float(os.environ.get("EVE_GAME_READY_STABLE_SECONDS", "3"))
 PAUSE_AFTER_DISABLE_3D_RENDERING = float(os.environ.get("EVE_PAUSE_AFTER_DISABLE_3D_RENDERING", "1.5"))
 DISABLE_3D_RENDERING_ON_GAME_START = os.environ.get("EVE_DISABLE_3D_RENDERING_ON_GAME_START", "1").lower() not in {"0", "false", "no"}
@@ -650,6 +652,14 @@ def game_visible_templates():
     ]
 
 
+def game_ui_after_3d_toggle_templates():
+    return [
+        *game_ready_templates(),
+        (GAME_TOP_LEFT_STATUS_INDICATOR_IMG, "Top-left game status indicator"),
+        (GAME_BOTTOM_NEOCOM_INDICATOR_IMG, "Bottom Neocom indicator"),
+    ]
+
+
 def game_quit_confirmation_templates():
     return [
         (GAME_YES_BUTTON_AFTER_QUIT_IMG, "Quit Game confirmation Yes"),
@@ -970,7 +980,7 @@ def rank_game_window(window):
     elif title.startswith("eve"):
         score = max(score, 80)
 
-    if "steam_app_8500" in app_id and title:
+    if "steam_app_8500" in app_id:
         score = max(score, 70)
 
     if score and window.get("is_focused"):
@@ -1053,6 +1063,43 @@ def focus_existing_game_window(context_description, verify_timeout_seconds=TIMEO
             return True
         log_event("Окно игры сфокусировано, но игровая UI-проверка не подтвердилась.", important=True)
 
+    return False
+
+
+def focus_game_for_ui_action(context_description):
+    if focus_existing_game_window(context_description):
+        return True
+
+    log_event(
+        f"{context_description}: niri не подтвердил окно игры. Пробуем сфокусировать видимый игровой UI кликом по image anchor.",
+        important=True,
+    )
+    focus_anchors = [
+        (GAME_TOP_LEFT_STATUS_INDICATOR_IMG, "top-left game status indicator"),
+        (GAME_BOTTOM_NEOCOM_INDICATOR_IMG, "bottom Neocom indicator"),
+    ]
+    image_filename, image_description, location = wait_for_optional_image(
+        focus_anchors,
+        f"{context_description}: видимый игровой UI для fallback focus",
+        timeout_seconds=TIMEOUT_LAUNCHER_FOCUS_VERIFY,
+        confidence_level=0.75,
+    )
+    if not location:
+        log_event(f"{context_description}: fallback focus невозможен, игровой UI не найден.", important=True)
+        return False
+
+    click_screen_location_custom(location, f"{image_description} для фокуса игры")
+    time.sleep(PAUSE_MEDIUM)
+    if wait_for_optional_image(
+        game_visible_templates(),
+        f"{context_description}: игра после fallback focus",
+        timeout_seconds=TIMEOUT_LAUNCHER_FOCUS_VERIFY,
+        confidence_level=0.75,
+    )[0]:
+        log_event(f"{context_description}: игра подтверждена после fallback focus.", important=True)
+        return True
+
+    log_event(f"{context_description}: fallback focus клик был выполнен, но игровой UI не подтвердился.", important=True)
     return False
 
 
@@ -1169,6 +1216,36 @@ def disable_3d_rendering_after_game_start():
 
         if after_image is not None:
             save_runtime_evidence_image(after_image, f"after_disable_3d_attempt_{attempt}")
+
+        ui_image, ui_description, _ = wait_for_optional_image(
+            game_ui_after_3d_toggle_templates(),
+            "игровой UI после Ctrl+Shift+F9",
+            timeout_seconds=TIMEOUT_GAME_UI_AFTER_3D_TOGGLE,
+            confidence_level=0.75,
+        )
+        if not ui_image:
+            launcher_image, launcher_description, _ = find_first_available_image(
+                launcher_after_game_exit_templates(),
+                confidence_level=0.75,
+                logged_errors=set(),
+            )
+            current_game_processes = get_game_process_ids()
+            if launcher_image:
+                log_event(
+                    "ОШИБКА: после Ctrl+Shift+F9 виден лаунчер, а не игра: "
+                    f"'{launcher_description}' ({launcher_image}).",
+                    important=True,
+                )
+            if not current_game_processes:
+                log_event("ОШИБКА: после Ctrl+Shift+F9 процесс игры не найден.", important=True)
+            log_event(
+                "ОШИБКА: Ctrl+Shift+F9 не подтверждён игровым UI. "
+                "Внутриигровые клики и клавиши запрещены.",
+                important=True,
+            )
+            return False
+
+        log_event(f"Игровой UI после Ctrl+Shift+F9 подтверждён: '{ui_description}' ({ui_image}).")
 
         if not REQUIRE_3D_RENDERING_TOGGLE_CONFIRMATION:
             log_event("Подтверждение отключения 3D-рендеринга пропущено: EVE_REQUIRE_3D_RENDERING_TOGGLE_CONFIRMATION=0.")
@@ -1569,21 +1646,80 @@ def close_optional_game_popups(timeout_seconds=TIMEOUT_GAME_POPUP_SCAN):
     return True
 
 
-def open_game_left_menu_and_click_finance():
-    for attempt in range(1, 3):
-        focus_existing_game_window("Перед открытием левого меню игры")
-        log_event(f"Открываем левое меню игры клавишей '\\', попытка {attempt}/2.")
-        pyautogui.press('\\')
+def wait_for_game_finance_button(description, timeout_seconds=TIMEOUT_GAME_REQUIRED_ACTION):
+    return wait_for_optional_image(
+        [(GAME_FINANCE_BUTTON_IMG, "Finance button")],
+        description,
+        timeout_seconds=timeout_seconds,
+        confidence_level=0.75,
+    )
+
+
+def click_finance_button_from_left_menu():
+    image_filename, image_description, location = wait_for_game_finance_button(
+        "кнопка Finance в левом меню",
+        timeout_seconds=TIMEOUT_GAME_REQUIRED_ACTION,
+    )
+    if not location:
+        return False
+
+    log_event(f"Finance найден: '{image_description}' ({image_filename}).")
+    click_screen_location_custom(location, "кнопка Finance в левом меню")
+    return True
+
+
+def press_game_left_menu_key():
+    pyautogui.keyDown('\\')
+    time.sleep(0.05)
+    pyautogui.keyUp('\\')
+
+
+def open_game_left_menu():
+    if wait_for_game_finance_button("левое меню уже открыто", timeout_seconds=1)[0]:
+        return True
+
+    for attempt in range(1, MAX_GAME_LEFT_MENU_OPEN_ATTEMPTS + 1):
+        if not focus_game_for_ui_action("Перед открытием левого меню игры"):
+            log_event("Фокус игры перед открытием левого меню не подтверждён. Повторяем.", important=True)
+            continue
+
+        if wait_for_game_finance_button("Finance после фокуса игры", timeout_seconds=1)[0]:
+            log_event("Левое меню уже открыто после фокуса/fallback-клика: Finance виден.", important=True)
+            return True
+
+        log_event(
+            f"Открываем левое меню игры клавишей '\\', "
+            f"попытка {attempt}/{MAX_GAME_LEFT_MENU_OPEN_ATTEMPTS}."
+        )
+        press_game_left_menu_key()
         time.sleep(PAUSE_MEDIUM)
-        if click_on_image(
-            GAME_FINANCE_BUTTON_IMG,
-            "кнопка Finance в левом меню",
+        if wait_for_game_finance_button("Finance после клавиши '\\'", timeout_seconds=3)[0]:
+            log_event("Левое меню открыто клавишей '\\': Finance виден.", important=True)
+            return True
+
+        log_event("Finance не найден после клавиши '\\'. Пробуем fallback-клик по Neocom indicator.", important=True)
+        if click_image_until_state(
+            GAME_BOTTOM_NEOCOM_INDICATOR_IMG,
+            "Neocom indicator для открытия левого меню",
+            [(GAME_FINANCE_BUTTON_IMG, "Finance button")],
+            "Finance после клика Neocom",
             confidence_level=0.75,
-            timeout_seconds=TIMEOUT_GAME_REQUIRED_ACTION,
+            click_timeout_seconds=TIMEOUT_GAME_OPTIONAL_ACTION,
+            verify_timeout_seconds=3,
+            attempts=1,
         ):
             return True
-        log_event("Finance не найден после нажатия '\\'. Пробуем переключить меню ещё раз.", important=True)
+
+        log_event("Левое меню не подтвердилось. Следующая попытка.", important=True)
+
+    log_event("ОШИБКА: левое меню игры не открылось по подтверждению Finance.", important=True)
     return False
+
+
+def open_game_left_menu_and_click_finance():
+    if not open_game_left_menu():
+        return False
+    return click_finance_button_from_left_menu()
 
 
 def open_my_contracts_and_find_contract_name():
@@ -1744,6 +1880,10 @@ def perform_contract_and_extractor_flow(current_username):
 
 def quit_game_to_launcher(game_process_baseline):
     log_event("--- Начало выхода из игры через Esc + Quit Game ---", important=True)
+
+    if wait_for_game_closed_confirmation(game_process_baseline, timeout_seconds=2):
+        log_event("Игра уже закрыта и лаунчер виден. Esc + Quit Game не требуется.", important=True)
+        return True
 
     for attempt in range(1, MAX_GAME_QUIT_MENU_ATTEMPTS + 1):
         close_optional_game_popups(timeout_seconds=TIMEOUT_GAME_POPUP_QUICK_SCAN)
