@@ -1,6 +1,8 @@
 import os
+import argparse
 import base64
 import email
+import re
 from email.header import decode_header
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -19,7 +21,7 @@ DEFAULT_GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 DEFAULT_GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 DEFAULT_GOOGLE_CERT_URL = "https://www.googleapis.com/oauth2/v1/certs"
 DEFAULT_GOOGLE_REDIRECT_URI = "http://localhost"
-GMAIL_TOKEN_PATH = os.environ.get("GMAIL_TOKEN_PATH", "").strip()
+DEFAULT_GMAIL_TOKEN_PATH = "token.json"
 
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
@@ -28,10 +30,23 @@ SCOPES = [
 
 TARGET_SENDER = "eveonline@news.ccpgames.com" 
 TARGET_SUBJECT = "Осталось пройти процедуру проверки" 
+DEFAULT_VERIFICATION_CODE_REGEX = r"(?<!\d)(\d{6})(?!\d)"
+DEFAULT_EVE_VERIFICATION_QUERIES = [
+    'newer_than:1d (from:eveonline.com OR from:ccpgames.com)',
+    'newer_than:1d ("verification code" OR "verification" OR "login code" OR "complete login")',
+    'newer_than:1d (EVE OR CCP) (verification OR code)',
+]
 
 
 def env_value(name, default=""):
     return os.environ.get(name, default).strip()
+
+
+def env_flag(name, default=False):
+    raw_value = env_value(name)
+    if raw_value == "":
+        return default
+    return raw_value.lower() in {"1", "true", "yes", "on"}
 
 
 def gmail_credentials_from_env():
@@ -49,6 +64,19 @@ def gmail_credentials_from_env():
         client_secret=client_secret,
         scopes=SCOPES,
     )
+
+
+def gmail_credentials_from_token_file(logger=print):
+    token_path = configured_token_path()
+    if not token_path or not token_path.exists():
+        return None
+    try:
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        (logger or print)(f"Gmail OAuth credentials loaded from token file: {token_path}")
+        return creds
+    except Exception as error:
+        (logger or print)(f"Не удалось загрузить Gmail token file {token_path}: {error}")
+        return None
 
 
 def google_client_config_from_env():
@@ -77,9 +105,10 @@ def google_client_config_from_env():
 
 
 def configured_token_path():
-    if not GMAIL_TOKEN_PATH:
+    token_path = env_value("GMAIL_TOKEN_PATH") or DEFAULT_GMAIL_TOKEN_PATH
+    if not token_path:
         return None
-    return resource_path(GMAIL_TOKEN_PATH)
+    return resource_path(token_path)
 
 
 def save_credentials_if_requested(creds):
@@ -101,52 +130,84 @@ def remove_configured_token_file():
         print(f"Не удалось удалить {token_path}: {error}")
 
 
-def get_gmail_service():
+def refresh_credentials(creds, logger=print):
+    emit = logger or print
+    emit("Обновление токена доступа...")
+    try:
+        creds.refresh(Request())
+        save_credentials_if_requested(creds)
+        return creds
+    except Exception as error:
+        emit(f"Ошибка обновления токена: {error}.")
+        return None
+
+
+def get_gmail_service(allow_interactive_auth=None, logger=print):
+    emit = logger or print
+
+    if allow_interactive_auth is None:
+        allow_interactive_auth = env_flag("GMAIL_ALLOW_INTERACTIVE_AUTH", default=False)
+
     creds = gmail_credentials_from_env()
     if creds:
-        print("Gmail OAuth credentials loaded from environment.")
-    
-    if not creds or not creds.valid:
-        if creds and creds.refresh_token:
-            print("Обновление токена доступа...")
-            try:
-                creds.refresh(Request())
-            except Exception as e_refresh:
-                print(f"Ошибка обновления токена: {e_refresh}. Требуется повторная авторизация.")
-                remove_configured_token_file()
-                creds = None
-                
-        if not creds:
-            print("Авторизация пользователя...")
-            client_config = google_client_config_from_env()
-            if not client_config:
-                print("!!! Не заданы GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET и GMAIL_REFRESH_TOKEN. Заполните .env. !!!")
-                return None
-            try:
-                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-                # Используем run_console для приложений без графического интерфейса или если run_local_server вызывает проблемы
-                # creds = flow.run_console() 
-                creds = flow.run_local_server(port=0) # Запускает локальный сервер для OAuth потока
-            except Exception as e_flow:
-                print(f"Ошибка во время потока авторизации: {e_flow}")
-                return None
-        
-        if creds: # Проверяем, что creds были получены
+        emit("Gmail OAuth credentials loaded from environment.")
+
+    candidate_credentials = []
+    token_file_creds = gmail_credentials_from_token_file(logger=emit)
+    if token_file_creds:
+        candidate_credentials.append(("token file", token_file_creds))
+    if creds:
+        candidate_credentials.append(("environment", creds))
+
+    usable_creds = None
+    for source_name, candidate in candidate_credentials:
+        if candidate.valid:
+            usable_creds = candidate
+            break
+        if candidate.refresh_token:
+            emit(f"Gmail credentials from {source_name} need refresh.")
+            refreshed = refresh_credentials(candidate, logger=emit)
+            if refreshed and refreshed.valid:
+                usable_creds = refreshed
+                break
+
+    creds = usable_creds
+    if not creds:
+        if not allow_interactive_auth:
+            emit(
+                "Интерактивная Gmail OAuth авторизация отключена для bot-flow. "
+                "Проверь GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GMAIL_REFRESH_TOKEN или обнови token.json через mail.py --auth-only."
+            )
+            return None
+
+        emit("Авторизация пользователя...")
+        client_config = google_client_config_from_env()
+        if not client_config:
+            emit("!!! Не заданы GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET. Заполните .env. !!!")
+            return None
+        try:
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+            creds = flow.run_local_server(port=0)
+        except Exception as e_flow:
+            emit(f"Ошибка во время потока авторизации: {e_flow}")
+            return None
+
+        if creds:
             save_credentials_if_requested(creds)
-        else: # Если creds не были получены по какой-то причине
-            print("Не удалось получить учетные данные после авторизации.")
+        else:
+            emit("Не удалось получить учетные данные после авторизации.")
             return None
 
 
     try:
         service = build('gmail', 'v1', credentials=creds)
-        print("Сервис Gmail API успешно создан.")
+        emit("Сервис Gmail API успешно создан.")
         return service
     except HttpError as error:
-        print(f"Произошла ошибка HttpError при создании сервиса Gmail API: {error}")
+        emit(f"Произошла ошибка HttpError при создании сервиса Gmail API: {error}")
         return None
     except Exception as e_build:
-        print(f"Непредвиденная ошибка при создании сервиса Gmail API: {e_build}")
+        emit(f"Непредвиденная ошибка при создании сервиса Gmail API: {e_build}")
         return None
 
 def decode_mime_words(s):
@@ -161,6 +222,123 @@ def decode_mime_words(s):
     except Exception:
         return s 
     return "".join(decoded_parts)
+
+
+def configured_verification_queries():
+    raw_queries = env_value("GMAIL_EVE_VERIFICATION_QUERIES")
+    if not raw_queries:
+        return DEFAULT_EVE_VERIFICATION_QUERIES
+    queries = [query.strip() for query in raw_queries.split("||") if query.strip()]
+    return queries or DEFAULT_EVE_VERIFICATION_QUERIES
+
+
+def decode_message_part_data(part):
+    body_data = part.get('body', {}).get('data')
+    if not body_data:
+        return ""
+    try:
+        return base64.urlsafe_b64decode(body_data.encode('ASCII')).decode('utf-8', 'ignore')
+    except Exception:
+        return ""
+
+
+def message_payload_to_text(payload):
+    chunks = []
+    mime_type = payload.get('mimeType', '')
+    if mime_type in ('text/plain', 'text/html'):
+        content = decode_message_part_data(payload)
+        if content:
+            if mime_type == 'text/html':
+                chunks.append(BeautifulSoup(content, "html.parser").get_text(" ", strip=True))
+            else:
+                chunks.append(content)
+
+    for part in payload.get('parts', []) or []:
+        nested_text = message_payload_to_text(part)
+        if nested_text:
+            chunks.append(nested_text)
+
+    return "\n".join(chunks)
+
+
+def message_headers_to_text(payload):
+    headers = payload.get('headers', []) or []
+    interesting_headers = []
+    for header in headers:
+        name = header.get('name', '').lower()
+        if name in {'from', 'subject', 'date'}:
+            interesting_headers.append(decode_mime_words(header.get('value', '')))
+    return "\n".join(interesting_headers)
+
+
+def extract_verification_code_from_text(text, code_regex=None):
+    if not text:
+        return None
+    regex = code_regex or env_value("GMAIL_EVE_VERIFICATION_CODE_REGEX", DEFAULT_VERIFICATION_CODE_REGEX)
+    matches = re.findall(regex, text)
+    if not matches:
+        return None
+    first_match = matches[0]
+    if isinstance(first_match, tuple):
+        first_match = next((item for item in first_match if item), "")
+    return str(first_match).strip() or None
+
+
+def find_latest_eve_verification_code(service, newer_than_epoch=None, timeout_seconds=120, poll_interval=5):
+    user_id = 'me'
+    queries = configured_verification_queries()
+    deadline = time.time() + timeout_seconds
+    newest_candidate = None
+
+    while time.time() < deadline:
+        for query in queries:
+            try:
+                response = service.users().messages().list(
+                    userId=user_id,
+                    q=query,
+                    maxResults=10,
+                ).execute()
+            except HttpError as error:
+                print(f"Ошибка Gmail API при поиске verification code по запросу '{query}': {error}")
+                continue
+
+            for message_summary in response.get('messages', []):
+                msg_id = message_summary.get('id')
+                if not msg_id:
+                    continue
+                try:
+                    message = service.users().messages().get(userId=user_id, id=msg_id, format='full').execute()
+                except HttpError as error:
+                    print(f"Ошибка Gmail API при чтении verification message {msg_id}: {error}")
+                    continue
+
+                internal_date_ms = int(message.get('internalDate', '0') or 0)
+                message_epoch = internal_date_ms / 1000 if internal_date_ms else 0
+                if newer_than_epoch and message_epoch and message_epoch < newer_than_epoch:
+                    continue
+
+                payload = message.get('payload', {})
+                searchable_text = "\n".join([
+                    message_headers_to_text(payload),
+                    message_payload_to_text(payload),
+                    message.get('snippet', ''),
+                ])
+                code = extract_verification_code_from_text(searchable_text)
+                if not code:
+                    continue
+
+                candidate = (message_epoch, code, msg_id)
+                if newest_candidate is None or candidate[0] > newest_candidate[0]:
+                    newest_candidate = candidate
+
+        if newest_candidate:
+            print(f"Найден свежий verification code в письме ID: {newest_candidate[2]}")
+            return newest_candidate[1]
+
+        time.sleep(poll_interval)
+
+    print(f"Verification code не найден за {timeout_seconds} секунд.")
+    return None
 
 def find_confirmation_link_in_html(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
@@ -335,8 +513,15 @@ def process_and_confirm_emails(service):
          print("Не удалось выполнить поиск писем из-за предыдущей ошибки (возможно, с API или аутентификацией).")
 
 if __name__ == '__main__':
-    gmail_service = get_gmail_service()
+    parser = argparse.ArgumentParser(description="Gmail helper for EVE automation.")
+    parser.add_argument("--auth-only", action="store_true", help="Only refresh/save Gmail OAuth token, do not process messages.")
+    args = parser.parse_args()
+
+    gmail_service = get_gmail_service(allow_interactive_auth=True)
     if gmail_service:
-        process_and_confirm_emails(gmail_service)
+        if args.auth_only:
+            print("Gmail OAuth token is ready.")
+        else:
+            process_and_confirm_emails(gmail_service)
     else:
         print("Не удалось получить доступ к сервису Gmail. Завершение работы.")

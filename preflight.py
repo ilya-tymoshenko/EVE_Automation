@@ -80,6 +80,10 @@ def main():
         print(f"  Steam EVE executable present: {LINUX_STEAM_EVE_EXE.exists()} ({LINUX_STEAM_EVE_EXE})")
     print()
 
+    print("Window focus:")
+    print(f"  niri: {'ok' if shutil.which('niri') else 'missing'}")
+    print()
+
     print("Python modules:")
     failed_modules = []
     for module_name in REQUIRED_MODULES:

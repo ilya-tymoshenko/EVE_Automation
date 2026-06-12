@@ -140,13 +140,53 @@ def describe_launcher_command():
 
 
 LAUNCHER_TEMPLATE_ASSETS = [
-    "add_account_button.png",
-    "sign_in_button.png",
-    "launcher_play_button.png",
+    "screens/launcher_add_account_button.png",
+    "screens/launcher_username_field.png",
+    "screens/launcher_username_label.png",
+    "screens/launcher_password_field.png",
+    "screens/launcher_password_label.png",
+    "screens/launcher_sign_in_button.png",
+    "screens/lancher_play_now_button.png",
+    "screens/launcher_account_settings_button.png",
+    "screens/launcher_button_status_client_is_running.png",
+    "screens/launcher_email_verification_code_field.png",
+    "screens/launcher_email_verification_continue_button.png",
+    "screens/launcher_remove_account_button.png",
+    "screens/launcher_remove_account_button_2.png",
+    "screens/launcher_fullscreen.png",
+    "screens/launcher_fullscreen_ready_status.png",
+    "screens/launcher_fullscreen_account_header.png",
     "gift_claim_button.png",
-    "gift_close_button.png",
+    "screens/game_7_days_omega_offer_in_store_3(free button).png",
     "confirm_yes_button.png",
     "license_accept_button.png",
+    "screens/game_alpa_status_downgrade_event.png",
+    "screens/game_alpha_status_close_button.png",
+    "screens/game_new_event.png",
+    "screens/game_new_event_close_button.png",
+    "screens/game_7_days_omega_offer_in_store_2.png",
+    "screens/game_quit_game_button.png",
+    "screens/game_yes_button_after_quit.png",
+    "screens/game_reward_popup_title.png",
+    "screens/game_undock_button.png",
+    "screens/game_bottom_neocom_indicator.png",
+    "screens/game_top_left_status_indicator.png",
+]
+
+GAME_CONTRACT_EXTRACTOR_TEMPLATE_ASSETS = [
+    "screens/game_finance_button.png",
+    "screens/game_contracts_button.png",
+    "screens/game_my_contracts_button.png",
+    "screens/game_contract_name_button.png",
+    "screens/game_contract_accept_button.png",
+    "screens/game_contract_yes_button.png",
+    "screens/game_contract_close_button.png",
+    "screens/x.png",
+    "screens/game_inventory_icon.png",
+    "screens/game_jita4.png",
+    "screens/game_skill_extractor.png",
+    "screens/game_activate_skill_extractor.png",
+    "screens/game_not_enough_skill_points_alert.png",
 ]
 
 CHARACTER_CREATION_TEMPLATE_ASSETS = [
@@ -160,6 +200,7 @@ CHARACTER_CREATION_TEMPLATE_ASSETS = [
 
 MATCH_TEMPLATE_ASSETS = [
     *LAUNCHER_TEMPLATE_ASSETS,
+    *GAME_CONTRACT_EXTRACTOR_TEMPLATE_ASSETS,
     *CHARACTER_CREATION_TEMPLATE_ASSETS,
 ]
 

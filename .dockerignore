@@ -4,9 +4,14 @@
 
 credentials.json
 token.json
+script_run_log.txt
+PLANS.md
 
 __pycache__/
 .venv/
 runtime_failures/
 codex_reports/
 template_backups/
+
+error_screenshot_*.png
+error_unexpected_*.png
