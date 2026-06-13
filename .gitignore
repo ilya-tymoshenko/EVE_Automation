@@ -5,12 +5,15 @@
 credentials.json
 token.json
 script_run_log.txt
+failed_accounts.log
 PLANS.md
 
 __pycache__/
 runtime_failures/
 codex_reports/
 template_backups/
+template_recrops/
+template_manual_recapture_log.jsonl
 
 error_screenshot_*.png
 error_unexpected_*.png
